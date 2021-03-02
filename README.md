@@ -12,10 +12,8 @@ supports a number of usage scenarios including:
 Information on setting up for the different usage scenarios can be found below.
  
  **Import Notes**:
- * This application has been tested with Bitbucket Server 5.10.1 and BitBucket Cloud
+ * This application has been tested with Bitbucket Server 7.10
  * This application was written extremely quickly and could use additional work in the form of refactoring, the addition of error handling, and testing (including on different versions of Bitbucket). Please feel free to jump in and help with pull requests, issues, etc.
- * This application is an example of how to bridge Bitbucket webhooks to Mattermost and is not 
- meant to be used in a production environment.
  
  # Supported Bitbucket Events
  
@@ -32,7 +30,6 @@ Information on setting up for the different usage scenarios can be found below.
 * Repository commit comment added
 * Repository commit comment deleted
 * Repository commit comment edited
-* Repository forked
 * Repository refs updated
 
 ## Setup the Flask Application
@@ -40,12 +37,12 @@ Information on setting up for the different usage scenarios can be found below.
 The following steps
 
 1. Log into the machine that will host the Python Flask application;
-2. Clone this repository to your machine: `git clone https://github.com/cvitter/mattermost-bitbucket-bridge.git`;
+2. Clone this repository to your machine:;
 3. Make a copy of `config.sample`: `cp config.sample config.json`
 4. Edit `config.json` to update the following fields as needed:
    * Application host address and port (generally debug should be left set to `false`;
    * Mattermost server_url and the user name or icon to override the webhook with if desired;
-   * And the base url of your Bitbucket server. (*Leave empty to use BitBucket Cloud*)
+   * And the base url of your Bitbucket server.
 5. Run the Flask application - there are a number of ways to run the application but I use the following command that runs the application headlessly and captures output into a log file for troubleshooting:
 
 ```
@@ -74,7 +71,7 @@ Then select the `Repository` and `Pull request` events you want to be notified a
 To use the docker based installation created by [ronhks](https://github.com/ronhks):
 
 1. Log into the machine that will host the Python Flask application;
-2. Clone this repository to your machine: `git clone https://github.com/cvitter/mattermost-bitbucket-bridge.git`;
+2. Clone this repository to your machine;
 3. Make a copy of `config.sample`: `cp config.sample config.json`
 4. Edit `config.json` to update the following fields as needed:
    * Application host address and port (generally debug should be left set to `false`;
@@ -109,5 +106,6 @@ The code in this repository is not sponsored or supported by Mattermost, Inc.
 * [Zsolt Dénes](https://github.com/ronhks)
 * [Nisarg Desai](https://github.com/Nisarg10)
 * [Mike Ehun](https://github.com/mikeehun)
+* [Steven](https://github.com/7-plus-t)
 
 Please submit Issues and/or Pull Requests.

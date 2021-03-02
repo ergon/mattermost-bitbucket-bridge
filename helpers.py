@@ -20,6 +20,25 @@ bitbucket_server_event_names = {
     "repo:forked": "Repository: Forked"
 }
 
+bitbucket_server_event_actions = {
+    "pr:comment:added": "added comment on pull request",
+    "pr:comment:deleted": "deleted comment on pull request",
+    "pr:comment:edited": "edited comment on pull request",
+    "pr:opened": "opened pull request",
+    "pr:declined": "declined pull request",
+    "pr:deleted": "deleted pull request",
+    "pr:merged": "merged pull request",
+    "pr:modified": "modified pull request",
+    "pr:approved": "approved pull request",
+    "pr:unapproved": "unapproved pull request",
+    "repo:refs_changed": "updated repository",
+    "repo:comment:added": "added comment on commit",
+    "repo:comment:edited": "edited comment on commit",
+    "repo:comment:deleted": "deleted comment on commit",
+    "repo:commit_comment_created": "created comment on commit",
+    "repo:forked": "forked repository"
+}
+
 bitbucket_cloud_event_actions = {
     "pullrequest:created": "{} created pull request {}",
     "pullrequest:updated": "{} updated pull request {}",

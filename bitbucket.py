@@ -3,8 +3,201 @@ from flask import request
 import json
 import requests
 import helpers
-import datetime
 
+# Config values
+application_host = ''
+application_port = ''
+application_debug = False
+error_color = ''
+alert_color = ''
+success_color = ''
+mattermost_url = ''
+mattermost_user = ''
+mattermost_icon = ''
+bitbucket_url = ''
+bitbucket_ignore_comments = False
+
+class Attachment:
+    def __init__(self):
+        self.author_name = ''
+        self.author_icon = ''
+        self.author_link = ''
+        self.fallback = ''
+        self.color = ''
+        self.pretext = ''
+        self.text = ''
+        self.title = ''
+        self.fields = []
+
+    def to_dict(self):
+        d = self.__dict__
+        d['fields'] = [f.__dict__ for f in self.fields]
+        return d
+
+class AttachmentField:
+    def __init__(self):
+        self.short = True
+        self.title = ''
+        self.value = ''
+
+class User:
+    def __init__(self):
+        self.name = ''
+        self.display_name = ''
+        self.email = ''
+        self.url = ''
+        self.avatar = ''
+
+    @classmethod
+    def from_bb_data(cls, data_user):
+        u = User()
+        u.name = data_user["name"]
+        u.display_name = data_user["displayName"]
+        u.email = data_user["emailAddress"]
+        u.url = data_user["links"]["self"][0]["href"]
+        u.avatar = u.url + "/avatar.png"
+        return u
+
+class Repository:
+    def __init__(self):
+        self.project = ''
+        self.slug = ''
+        self.name = ''
+        self.url = ''
+
+    @classmethod
+    def from_bb_data(cls, repo_data):
+        r = Repository()
+        r.project = Project.from_bb_data(repo_data["project"])
+        r.name = repo_data["name"]
+        r.slug = repo_data["slug"]
+        r.url = repo_data["links"]["self"][0]["href"]
+        return r
+
+class Comment:
+    def __init__(self):
+        self.id = ''
+        self.commit = ''
+        self.author = User()
+        self.text = ''
+        self.content_raw = ''
+        self.content_html = ''
+        self.content_markup = ''
+        self.repository = None
+
+    @classmethod
+    def from_bb_data(cls, data):
+        c = Comment()
+        comment_data = data["comment"]
+        c.id = comment_data["id"]
+        c.text = comment_data["text"]
+        c.commit = data.get("commit")
+        c.author = User.from_bb_data(comment_data["author"])
+        content = comment_data.get("comments")
+        if content is not None and len(content) > 0:
+            c.content_raw = content.get("raw", "")
+            c.content_html = content.get("html", "")
+            c.content_markup = content.get("markup", "")
+        if data.get("repository") is not None:
+            c.repository = Repository.from_bb_data(data["repository"])
+        return c
+
+class Project:
+    def __init__(self):
+        self.key = ''
+        self.name = ''
+        self.url = ''
+
+    @classmethod
+    def from_bb_data(cls, proj_data):
+        p = Project()
+        p.key = proj_data["key"]
+        p.name = proj_data["name"]
+        p.url = proj_data["links"]["self"][0]["href"]
+        return p
+
+class Ref:
+    def __init__(self):
+        self.id = ''
+        self.display_id = ''
+        self.latest_commit = ''
+        self.latest_commit_url = ''
+        self.repository = Repository()
+        self.url = ''
+
+    @classmethod
+    def from_bb_data(cls, ref_data):
+        r = Ref()
+        r.id = ref_data["id"]
+        r.display_id = ref_data["displayId"]
+        r.latest_commit = ref_data["latestCommit"]
+        r.latest_commit_url = "/commits?until=" + r.id
+        r.repository = Repository.from_bb_data(ref_data["repository"])
+        r.url = "/commits/" + r.latest_commit
+
+        return r
+
+class RefChange:
+    def __init__(self):
+        self.id = ''
+        self.display_id = ''
+        self.from_hash = ''
+        self.to_hash = ''
+        self.type = ''
+
+    @classmethod
+    def from_bb_data(cls, refchange_data):
+        rc = RefChange()
+        rc.id = refchange_data["ref"]["id"]
+        rc.display_id = refchange_data["ref"]["displayId"]
+        rc.from_hash = refchange_data["fromHash"]
+        rc.to_hash = refchange_data["toHash"]
+        rc.typ = refchange_data["type"]
+        return rc
+
+class PullRequest:
+    def __init__(self):
+        self.event = ''
+        self.id = ''
+        self.title = ''
+        self.description = ''
+        self.url = ''
+        self.comment = Comment()
+        self.reviewers = []
+        self.source = Ref()
+        self.destination = Ref()
+
+    @classmethod
+    def from_bb_server_data(cls, data):
+        pr_data = data["pullRequest"]
+        pr = PullRequest()
+        pr.event = data["eventKey"].split(":")[-1]
+        pr.id = str(pr_data["id"])
+        pr.title = pr_data.get("title")
+        pr.description = pr_data.get("description")
+        pr.url = pr_data["links"]["self"][0]["href"]
+        pr.reviewers = [User.from_bb_data(u["user"]) for u in pr_data["reviewers"]]
+
+        pr.source = Ref.from_bb_data(pr_data["fromRef"])
+        pr.destination = Ref.from_bb_data(pr_data["toRef"])
+
+        if data["eventKey"].startswith("pr:comment:"):
+            pr.comment = Comment.from_bb_data(data)
+
+        return pr
+
+class Push:
+    def __init__(self):
+        self.repository = Repository()
+        self.changes = []
+
+    @classmethod
+    def from_bb_data(cls, data):
+        p = Push()
+        p.repository = Repository.from_bb_data(data["repository"])
+        p.changes = [RefChange.from_bb_data(rc) for rc in data["changes"]]
+
+        return p
 
 def readConfig():
     """
@@ -41,6 +234,15 @@ def get_event_name(event_key):
         raise KeyError('Unsupported event type!')
     return event_out
 
+def get_event_action(event_key):
+    """
+    Converts event to friendly output
+    """
+    event_out = helpers.bitbucket_server_event_actions.get(event_key)
+    if event_out is None:
+        raise KeyError('Unsupported event type!')
+    return event_out
+
 def get_event_action_text(event_key):
     """
     Converts event to friendly output
@@ -54,211 +256,80 @@ def process_payload_server(hook_path, data):
     """
     Reads Bitbucket JSON payload and converts it into Mattermost friendly
     message attachement format
-    TODO: Add option to return message as text only format
+    https://confluence.atlassian.com/bitbucketserver/event-payload-938025882.html
     """
-    text_out = ""
-    attachment_text = ""
 
-    event_name = get_event_name(data["eventKey"])
-    actor = "[" + data["actor"]["name"] + \
-            " (" + data["actor"]["emailAddress"] + ")](" + bitbucket_url + \
-            "users/" + data["actor"]["name"] + ")"
+    action = get_event_action(data["eventKey"])
 
-    attach_extra = ""
-    # Pull Requests and Pull Request Comments
+    actor = User.from_bb_data(data["actor"])
+
+    attachment = Attachment()
+    attachment.author_name = actor.display_name
+    attachment.author_icon = actor.avatar
+    attachment.author_link = actor.url
+
     if data["eventKey"].startswith('pr:'):
-        pr_id = str(data["pullRequest"]["id"])
-        pr_title = data["pullRequest"]["title"]
-        repo_name = data["pullRequest"]["toRef"]["repository"]["name"]
-        proj_key = data["pullRequest"]["toRef"]["repository"]["project"]["key"]
-        url = bitbucket_url + "projects/" + proj_key + "/repos/" + \
-              repo_name + "/pull-requests/" + pr_id
+        pr = PullRequest.from_bb_server_data(data)
 
-        if data["eventKey"].startswith("pr:comment:"):
-            attach_extra = "**Comment**: [" + data["comment"]["text"] + \
-                           "](" + url + ")"
-        else:
-            attach_extra = "[" + pr_id + " : " + pr_title + "](" + url + ")"
+        attachment.text = "%s `<%s>` %s `%s`. [(open)](%s)" \
+                          % (actor.display_name, actor.email, action, pr.title, pr.url)
+        attachment.color = success_color
 
-    # Commits - Push (Add, Update), Comment, etc.
-    if data["eventKey"].startswith('repo:'):
-        repo_name = data["repository"]["name"]
-        proj_key = data["repository"]["project"]["key"]
-        url = bitbucket_url + "projects/" + proj_key + "/repos/" + \
-              repo_name
+        description_field = AttachmentField()
+        description_field.title = "Description"
+        description_field.value = pr.description
+        attachment.fields.append(description_field)
 
-        # Comment added, updated, deleted
-        if data["eventKey"].startswith("repo:comment:"):
-            url += "/commits/" +  data["commit"]
-            attach_extra = "**Comment**: [" + data["comment"]["text"] + \
-                           "](" + url + ")"
+        reviewers_field = AttachmentField()
+        reviewers_field.title = "Reviewers"
+        reviewers_field.value = ", ".join(["@" + r.name for r in pr.reviewers])
+        attachment.fields.append(reviewers_field)
 
-        if data["eventKey"] == "repo:refs_changed":
-            specific_event = "**Action**: " + data["changes"][0]["type"] + \
-                             " - " + data["changes"][0]["ref"]["displayId"] + \
-                             " (" + data["changes"][0]["ref"]["type"] + ")"
-            url += "/commits/" +  data["changes"][0]["toHash"]
-            attach_extra = specific_event + "\n[Commit: " + \
-                           data["changes"][0]["toHash"] + "](" + url + ")"
+        source_field = AttachmentField()
+        source_field.title = "Source"
+        source_field.value = "%s\n%s" % (pr.source.repository.name, pr.source.display_id)
+        attachment.fields.append(source_field)
 
-    # Assemble the final attachment text to return and pass
-    # to the send_webhook function
-    attachment_text = "**" + event_name + "**\n**Author**: " + actor
-    if len(repo_name) > 1:
-        attachment_text = "**Repository**: " + repo_name + "\n" + \
-                           attachment_text
-    if len(attach_extra) > 0:
-        attachment_text += "\n" + attach_extra
+        destination_field = AttachmentField()
+        destination_field.title = "Destination"
+        destination_field.value = "%s\n%s" % (pr.destination.repository.name, pr.destination.display_id)
+        attachment.fields.append(destination_field)
 
-    return send_simple_webhook(hook_path, text_out, attachment_text, success_color)
+        if data["eventKey"].startswith('pr:comment'):
+            comment_field = AttachmentField()
+            comment_field.short = False
+            comment_field.title = "Comment"
+            comment_field.value = pr.comment.text
+            attachment.fields.append(comment_field)
 
-def process_payload_cloud(hook_path, data, event_key):
-    """
-    Reads Bitbucket Cloud JSON payload and converts it into Mattermost friendly
-    message attachement format
-    TODO: Add option to return message as text only format
-    """
-    text = ""
-    attachment = {}
-    
-    event_name = get_event_action_text(event_key)
-    actor_name = data["actor"]["display_name"]
-    actor_url = data["actor"]["links"]["html"]["href"]
+    elif data["eventKey"].startswith('repo:refs_changed'):
+        p = Push.from_bb_data(data)
+        commit_url_base = p.repository.url[0:-6] + "commits"
+        branches = ",".join(["[%s](%s?until=%s)" % (c.display_id, commit_url_base, c.id) for c in p.changes])
+        attachment.pretext = "Push on [%s](%s) branch %s by %s `<%s>` (%d commit/s)." \
+                          % (p.repository.name, p.repository.url, branches, actor.display_name, actor.email, len(p.changes))
+        attachment.color = success_color
 
-    # Pull Requests and Pull Request Comments
-    if event_key.startswith('pullrequest:'):
-        if event_key.startswith('pullrequest:comment_'):
-            comment_text = data["comment"]["content"]["raw"]
-            if any(ext in comment_text for ext in bitbucket_ignore_comments):
-                raise StandardError('Ignoring comment!')
+        for c in p.changes:
+            commit_field = AttachmentField()
+            commit_field.short = False
+            commit_link = commit_url_base + "/" + c.to_hash
+            commit_field.value = "[%s](%s): %s - %s" % (c.to_hash[0:10], commit_link, c.display_id, actor.name) # TODO: Fix commit message and commiter
+            attachment.fields.append(commit_field)
 
-        pr_id = str(data["pullrequest"]["id"])
-        pr_title = data["pullrequest"]["title"]
-        pr_description = data["pullrequest"]["description"]
-        pr_author_name = data["pullrequest"]["author"]["display_name"]
-        pr_author_url = data["pullrequest"]["author"]["links"]["html"]["href"]
-        pr_author_icon_url = data["pullrequest"]["author"]["links"]["avatar"]["href"]
-        pr_url = data["pullrequest"]["links"]["html"]["href"]
+    elif data["eventKey"].startswith('repo:comment'):
+        c = Comment.from_bb_data(data)
+        commit_url_base = c.repository.url[0:-6] + "commits/"
+        attachment.pretext = "%s <%s> %s [%s](%s)" \
+                             % (actor.display_name, actor.email, action, c.commit[0:11], commit_url_base + c.commit)
+        attachment.color = success_color
+        comment_field = AttachmentField()
+        comment_field.short = False
+        comment_field.title = "Comment"
+        comment_field.value = c.content_markup if c.content_markup != "" else c.text
+        attachment.fields.append(comment_field)
 
-        text = event_name.format("[" + actor_name + "](" + actor_url + ")", "[#" + pr_id + "](" + pr_url + ")")
-        
-        color = ''
-        if event_key == 'pullrequest:approved' or event_key == 'pullrequest:merged':
-            color = 'good'
-        elif event_key == 'pullrequest:unapproved' or event_key == 'pullrequest:declined' or event_key == 'pullrequest:deleted':
-            color = 'danger'
-
-        attachment = {
-                "author_name": pr_author_name,
-                "author_icon": pr_author_icon_url,
-                "author_link": pr_author_url,
-                "title": pr_title,
-                "color": color,
-                "title_link": pr_url,
-                "fields": [
-                    {
-                        "short": False,
-                        "title": "Description",
-                        "value": pr_description
-                    }
-                ]
-            }
-
-        reviewers = []
-        for participant in data["pullrequest"]["participants"]:
-            if participant["role"] != 'REVIEWER':
-                continue
-            approved_icon = ':white_check_mark: ' if participant['approved'] else ''
-            reviewers.append("{}[{}]({})".format(approved_icon, participant["user"]["display_name"], participant["user"]["links"]["html"]["href"]))
-        if len(reviewers) > 0:
-            attachment["fields"].append({
-                        "short": False,
-                        "title": "Reviewers",
-                        "value": ", ".join(reviewers)
-                    })
-
-        if event_key.startswith('pullrequest:comment_'):
-            if event_key == 'pullrequest:comment_deleted':
-                attachment["fields"] = {}
-            else:
-                attachment["fields"] = [{
-                            "short": False,
-                            "title": "Comment",
-                            "value": comment_text
-                        }]                
-
-    elif event_key.startswith('repo:commit_status_'):        
-        commit_author_name = data["commit_status"]["commit"]["author"]["user"]["display_name"]
-        commit_author_url = data["commit_status"]["commit"]["author"]["user"]["links"]["html"]["href"]
-        commit_author_icon_url = data["commit_status"]["commit"]["author"]["user"]["links"]["avatar"]["href"]
-        commit_title = data["commit_status"]["commit"]["message"]
-        commit_url = data["commit_status"]["commit"]["links"]["html"]["href"]
-
-        state = data["commit_status"]["state"]
-        color = ''
-        state_icon = ''
-        state_action = 'passed'
-        if state == 'SUCCESSFUL':
-            color = 'good'
-            state_icon = ':white_check_mark: '
-        elif state == 'FAILED':
-            color = 'danger'
-            state_icon = ':no_entry: '
-            state_action = 'failed'
-        else:
-            raise KeyError('Unsupported event state!')
-
-        text = "{}[{}]({}) {}".format(state_icon, data["commit_status"]["name"], data["commit_status"]["url"], state_action)
-        if len(data["commit_status"]["description"]):
-            text += "\n{}".format(data["commit_status"]["description"])
-
-
-        attachment = {
-                "author_name": commit_author_name,
-                "author_icon": commit_author_icon_url,
-                "author_link": commit_author_url,
-                "title": commit_title,
-                "title_link": commit_url,
-                "color": color
-            }
-
-    elif event_key.startswith('repo:push'):
-        push_commit_date = data["push"]["changes"][0]["new"]["target"]["date"]
-        push_commit_repository = data["repository"]["name"]
-        push_commit_repository_url = data["repository"]["links"]["html"]["href"]
-
-        # Following code strip the last +HH:MM(timezone offset) of date string and then convert
-        # it to datetime object in pyhton.
-        date_sub_string_index = push_commit_date.find('+')
-        push_commit_date = push_commit_date[:date_sub_string_index]
-
-        text = event_name.format("[" + push_commit_repository + "](" + push_commit_repository_url + ")","[" + actor_name + "](" + actor_url + ")")
-
-        if data["push"]["changes"][0]["forced"]:
-            text = text.replace("pushed", "**force pushed**")
-
-        text += "\n"
-        for commit in data["push"]["changes"][0]["commits"]:
-            message = commit["message"].split('\n', 1)[0]
-            author = commit["author"]["raw"].split('<', 1)[0].strip()
-            link = "[" + commit["hash"] + "](" + commit["links"]["html"]["href"] + ")"
-            text += "- " + message + " (" + link + " by " + author + ")\n"
-
-        if data["push"]["changes"][0]["truncated"]:
-            text += "- ...and more (truncated)\n"
-
-        text += "\n"
-
-        attachment = None
-
-    # Assemble message data
-    data = {
-            'text': text,
-            'username': mattermost_user,
-            'icon_url': mattermost_icon,
-            "attachments": [attachment]
-        }
-    return send_webhook_data(hook_path, data)
+    return send_attachment_webhook(hook_path, None, attachment)
 
 def send_webhook_data(hook_path, data):
     """
@@ -270,6 +341,23 @@ def send_webhook_data(hook_path, data):
         headers = {'Content-Type': 'application/json'}
     )
     return response
+
+def send_attachment_webhook(hook_path, text_out, attachment):
+    """
+    Assembles incoming text, creates JSON object for the response, and
+    sends it on to the Mattermost server and hook configured
+    """
+
+    data = {
+        'text': text_out,
+        'username': mattermost_user,
+        'icon_url': mattermost_icon,
+        "attachments": [attachment.to_dict()]
+    }
+
+    print(data)
+
+    return send_webhook_data(hook_path, data)
 
 def send_simple_webhook(hook_path, text_out, attachment_text, attachment_color):
     """
@@ -316,10 +404,11 @@ def hooks(hook_path):
     else:
         if len(request.get_json()) > 0:
             data = request.get_json()
-            if len(bitbucket_url) > 0:
-                response = process_payload_server(hook_path, data)
-            else:
-                response = process_payload_cloud(hook_path, data, event)
+            if application_debug:
+                print(data)
+
+            response = process_payload_server(hook_path, data)
+
     return ""
 
 if __name__ == '__main__':
